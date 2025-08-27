@@ -1,92 +1,56 @@
-#include "gridmap.h"
-#include "odometry.h"
-#include "planning.h"
 #include "ublox_reader.h"
-#include <cmath>
-#include <fstream>
+#include "gridmap.h"
+#include "planning.h"
+#include "odometry.h"
 #include <iostream>
-#include <string>
 
 using namespace std;
 
-// Helper to convert angle to unit direction
-pair<double, double> directionFromAngle(double angle_deg) {
-  double rad = angle_deg * M_PI / 180.0;
-  return {cos(rad), sin(rad)};
-}
+int main() {
+    // 1. Read UBX file (two hex lines: start and goal)
+    string filename = "gps_data.txt"; // replace with your file
+    auto [startGPS, goalGPS] = readUbloxFile(filename);
 
-int main(int argc, char *argv[]) {
+    cout << "Start GPS: " << startGPS.lat << ", " << startGPS.lon << endl;
+    cout << "Goal GPS: " << goalGPS.lat << ", " << goalGPS.lon << endl;
 
-  if (argc < 2) {
-    cerr << "Usage: " << argv[0] << " <gps_data_file>" << endl;
-    return 1;
-  }
+    // 2. Create grid map
+    double cellsize = 1.0;  // 1 meter per grid cell
+    int rows = 15;
+    int cols = 15;
+    Gridmapper gridMap(startGPS, cellsize, rows, cols);
+    auto grid = gridMap.getGrid();
 
-  // store file path to GPS data
-  string gps_data = argv[1];
+    // 3. Convert GPS to grid coordinates
+    auto startGrid = gridMap.gpstogrid(startGPS);
+    auto goalGrid = gridMap.gpstogrid(goalGPS);
 
-  // file path to store result
-  string odom_commands = argv[2];
+    cout << "Start grid: (" << startGrid.first << ", " << startGrid.second << ")\n";
+    cout << "Goal grid: (" << goalGrid.first << ", " << goalGrid.second << ")\n";
 
-  // decode GPS data from file
-  auto result = readUbloxFile(gps_data);
-  if(static_cast<int>(result.first.lat)==0 && static_cast<int>(result.first.lon)==0 && static_cast<int>(result.second.lat)==0 && static_cast<int>(result.second.lon)==0)
-  {
-    cout<<"Error: Invalid GPS Coordinates"<<endl;
-    return 1;
-  }
-  cout << "Start -> Lat: " << result.first.lat << " Lon: " << result.first.lon
-       << endl;
-  cout << "Goal  -> Lat: " << result.second.lat << " Lon: " << result.second.lon
-       << endl;
+    // 4. Path planning
+    Planner planner(grid);
+    auto path = planner.pathplanning(startGrid, goalGrid);
 
-  // Initialize Gridmapper with start as origin
-  GPS origin = {result.first.lat, result.first.lon};
-  double cellsize = 1.0; // meters per grid cell
-  int rows = 10, cols = 10;
-  Gridmapper grid(origin, cellsize, rows, cols);
+    if (path.empty()) {
+        cout << "No path found!" << endl;
+        return 1;
+    }
 
-  // Convert start and goal GPS to grid coordinates
-  pair<int, int> start = grid.gpstogrid(result.first);
-  pair<int, int> goal = grid.gpstogrid(result.second);
+    cout << "Planned path:" << endl;
+    for (auto &p : path) {
+        cout << "(" << p.first << ", " << p.second << ") ";
+    }
+    cout << endl;
 
-  cout << "Start (grid) -> (" << start.first << "," << start.second << ")"
-       << endl;
-  cout << "Goal  (grid) -> (" << goal.first << "," << goal.second << ")"
-       << endl;
+    // 5. Compute odometry commands
+    double wheel_radius = 0.05; // meters
+    double rpm = 60.0;
+    Odometry odom(wheel_radius, rpm);
+    MotionCommand cmd = odom.computeCommands(path);
 
-  // Path planning
-  Planner planner(grid.getGrid());
-  auto path = planner.pathplanning(start, goal);
+    cout << "Total distance traversal time: " << cmd.time_sec << " sec\n";
+    cout << "Total angle rotated: " << cmd.angle_deg << " degrees\n";
 
-  // print planned path
-  cout << "Planned Path:" << endl;
-  for (auto &p : path) {
-    cout << "(" << p.first << "," << p.second << ") ";
-  }
-  cout << endl;
-
-  // Odometry commands
-  cout << "\nOdometry Commands" << endl;
-  double wheel_radius = 0.05; // meters
-  double rpm = 120;           // wheel speed
-  Odometry odo(wheel_radius, rpm);
-  auto commands = odo.computeCommands(path);
-
-  // computing total time and sec
-  ofstream result_file(odom_commands);
-
-  // check if file is open
-  if (!result_file.is_open()) {
-    cerr << "Error: cannot open file " << odom_commands << endl;
-    return 1;
-  }
-
-  // writing result to file
-  result_file << commands.time_sec << endl << commands.angle_deg << endl;
-
-  // closing file
-  result_file.close();
-
-  return 0;
+    return 0;
 }
