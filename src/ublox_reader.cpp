@@ -1,75 +1,62 @@
 #include "ublox_reader.h"
-#include <cstdint>
-#include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <string>
 #include <vector>
 
 using namespace std;
 
-static int NAV_POSLLH(uint8_t *buffer, classId *gps) {
-  memcpy(&gps->iTOW, buffer, 4);
-  memcpy(&gps->lon, buffer, 4);
-  memcpy(&gps->lat, buffer, 4);
-  memcpy(&gps->height, buffer + 12, 4);
-  memcpy(&gps->hMSL, buffer + 16, 4);
-  memcpy(&gps->hAcc, buffer + 20, 4);
-  memcpy(&gps->vAcc, buffer + 24, 4);
-  return 0;
-}
-
-static vector<uint8_t> hexToBytes(const string &rawHex) {
-  vector<uint8_t> bytes;
-  stringstream ss(rawHex);
-  string token;
-  while (ss >> token) {
-    bytes.push_back(static_cast<uint8_t>(stoul(token, nullptr, 16)));
-  }
-  return bytes;
-}
-
 int decodeUBX(uint8_t *buffer, classId *gps) {
-  // buffer points at class field
-  if (buffer[30] == 0x01 && buffer[32] == 0x02) { // Class = NAV, ID = POSLLH
-    return NAV_POSLLH(buffer + 4, gps);         // skip length
-  }
-  return 1;
+  if (!buffer || !gps)
+    return 1;
+
+  gps->iTOW = *((uint32_t *)(buffer));
+  gps->lon = *((int32_t *)(buffer + 4));
+  gps->lat = *((int32_t *)(buffer + 8));
+  gps->height = *((int32_t *)(buffer + 12));
+  gps->hMSL = *((int32_t *)(buffer + 16));
+  gps->hAcc = *((uint32_t *)(buffer + 20));
+  gps->vAcc = *((uint32_t *)(buffer + 24));
+
+  return 0;
 }
 
 GPS gpsFromData(const classId &gps) {
   GPS out;
   out.lat = gps.lat * 1e-7;
   out.lon = gps.lon * 1e-7;
-  out.height = gps.height / 1000.0;
+  out.height = gps.height * 1e-3;
   return out;
+}
+
+static vector<uint8_t> hexStringToBytes(const string &hex) {
+  vector<uint8_t> bytes;
+  for (size_t i = 0; i < hex.size(); i += 2) {
+    string byteString = hex.substr(i, 2);
+    uint8_t byte = (uint8_t)strtol(byteString.c_str(), nullptr, 16);
+    bytes.push_back(byte);
+  }
+  return bytes;
 }
 
 pair<GPS, GPS> readUbloxFile(const string &filename) {
   ifstream file(filename);
   if (!file.is_open()) {
-    cerr << "Error: cannot open file " << filename << endl;
-    return {{0.0, 0.0}, {0.0, 0.0}};
+    cerr << "Error opening UBX file: " << filename << endl;
+    return {};
   }
-  string rawStart, rawGoal;
-  getline(file, rawStart);
-  getline(file, rawGoal);
 
-  cout << "Raw UBX Start: " << rawStart << endl;
-  cout << "Raw UBX Goal : " << rawGoal << endl;
+  string line1, line2;
+  getline(file, line1);
+  getline(file, line2);
 
-  vector<uint8_t> startBytes = hexToBytes(rawStart);
-  vector<uint8_t> goalBytes = hexToBytes(rawGoal);
+  auto bytes1 = hexStringToBytes(line1);
+  auto bytes2 = hexStringToBytes(line2);
 
-  classId gpsStartData, gpsGoalData;
-  decodeUBX(startBytes.data(), &gpsStartData);
-  decodeUBX(goalBytes.data(), &gpsGoalData);
+  classId data1{}, data2{};
+  decodeUBX(bytes1.data(), &data1);
+  decodeUBX(bytes2.data(), &data2);
 
-  GPS startGPS = gpsFromData(gpsStartData);
-  GPS goalGPS = gpsFromData(gpsGoalData);
-
-  file.close();
-
-  return {startGPS, goalGPS};
+  return {gpsFromData(data1), gpsFromData(data2)};
 }
